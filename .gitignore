@@ -147,3 +147,6 @@ skyseg.onnx
 examples/*
 *.ply
 *.pt
+LICENSE.txt
+files.txt
+fps.txt

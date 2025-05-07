@@ -1,7 +1,9 @@
 #!/bin/bash
 # cd /mnt/afs_james/dataset/human_dataset
+# 1. 切分数据
 # python clip_humanvid.py
 # cp /mnt/afs_james/dataset/human_dataset/humanvid/videos/videos.json /mnt/afs_james/dataset/human_dataset/humanvid/videos/videos_bak.json
+# conda activate /mnt/afs/miniconda/envs/Frame2Scene/
 # cd /mnt/afs/yuanweizhong/vggt/
 # 设置要遍历的目录
 directory="/mnt/afs_james/dataset/human_dataset/humanvid/videos/"
@@ -16,7 +18,7 @@ directory="/mnt/afs_james/dataset/human_dataset/humanvid/videos/"
 # done
 
 
-
+# 2. vggt处理数据
 # 先收集所有.mp4文件到数组
 mapfile -d '' files < <(find "$directory" -name "*.mp4" -print0)
 total=${#files[@]}
@@ -32,3 +34,7 @@ for ((i=half; i<total; i++)); do
   echo "转换文件: $file"
   time python inference.py --image_folder "$file" --mask_sky || continue
 done
+
+# 3. 生成最终的json文件
+# cd /mnt/afs_james/dataset/human_dataset
+# python process_humanvid_json.py
