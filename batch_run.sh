@@ -22,7 +22,8 @@ directory="/mnt/afs_james/dataset/human_dataset/humanvid/videos/"
 # 先收集所有.mp4文件到数组
 mapfile -d '' files < <(find "$directory" -name "*.mp4" -print0)
 total=${#files[@]}
-half=$((total * 7   / 16))
+# half=$((total * 7   / 16))
+half=0
 # half=$((total * 7   / 8))
 # 打印所有files
 # for file in "${files[@]}"; do
@@ -36,5 +37,5 @@ for ((i=half; i<total; i++)); do
 done
 
 # 3. 生成最终的json文件
-# cd /mnt/afs_james/dataset/human_dataset
-# python process_humanvid_json.py
+cd /mnt/afs_james/dataset/human_dataset
+python process_humanvid_json.py

@@ -157,79 +157,77 @@ def vis(
         os.makedirs(os.path.join(output_dir, "depth"), exist_ok=True)
     if len(depth_map.shape) == 2:  # 单帧情况
         depth = depth_map
-        depth *= 1000  # 缩放深度值
-        depth_uint16 = depth.astype(np.uint16)
+        depth_uint16 = (depth*1000).astype(np.uint16)
         depth_png_path = os.path.join(output_dir, "depth/depth.png")
         cv2.imwrite(depth_png_path, depth_uint16)
     else:  # 多帧情况
         for i, depth in enumerate(depth_map):
-            depth *= 1000
-            depth_uint16 = depth.astype(np.uint16)
+            depth_uint16 = (depth*1000).astype(np.uint16)
             depth_png_path = os.path.join(output_dir, "depth", f"{int(start_index+i):04d}.png")
             cv2.imwrite(depth_png_path, depth_uint16)
-
-
-    # # Compute world points from depth if not using the precomputed point map
-    # if not use_point_map:
-    #     world_points = unproject_depth_map_to_point_map(depth_map, extrinsics_cam, intrinsics_cam)
-    #     conf = depth_conf
+    
+    # import ipdb;ipdb.set_trace()
+    # Compute world points from depth if not using the precomputed point map
+    if not use_point_map:
+        world_points = unproject_depth_map_to_point_map(depth_map, extrinsics_cam, intrinsics_cam)
+        conf = depth_conf
+    else:
+        world_points = world_points_map
+        conf = conf_map
+    # t_sky_1 = time.time()
+    # # Apply sky segmentation if enabled
+    # if mask_sky and image_folder is not None:
+    #     conf = apply_sky_segmentation(conf, image_folder)
+    # t_sky_2 = time.time()
+    # print('mask sky time: ',t_sky_2 - t_sky_1)
+    # Convert images from (S, 3, H, W) to (S, H, W, 3)
+    # Then flatten everything for the point cloud
+    # 7.2 准备颜色数据
+    # if len(pad_masks) != 0:
+    #     # unpad colors
+    #     # colors = images.transpose(0, 2, 3, 1)
+    #     colors = ori_images
+    #     colors = colors[:, :, valid_cols, :]
     # else:
-    #     world_points = world_points_map
-    #     conf = conf_map
-    # # t_sky_1 = time.time()
-    # # # Apply sky segmentation if enabled
-    # # if mask_sky and image_folder is not None:
-    # #     conf = apply_sky_segmentation(conf, image_folder)
-    # # t_sky_2 = time.time()
-    # # print('mask sky time: ',t_sky_2 - t_sky_1)
-    # # Convert images from (S, 3, H, W) to (S, H, W, 3)
-    # # Then flatten everything for the point cloud
-    # # 7.2 准备颜色数据
-    # # if len(pad_masks) != 0:
-    # #     # unpad colors
-    # #     # colors = images.transpose(0, 2, 3, 1)
-    # #     colors = ori_images
-    # #     colors = colors[:, :, valid_cols, :]
-    # # else:
-    # #     colors = ori_images
-    # colors = ori_images/255
-    #     # colors = images.transpose(0, 2, 3, 1)  # now (S, H, W, 3)
-    # S, H, W, _ = world_points.shape
-    # # import ipdb;ipdb.set_trace()
+    #     colors = ori_images
+    colors = ori_images/255
+        # colors = images.transpose(0, 2, 3, 1)  # now (S, H, W, 3)
+    S, H, W, _ = world_points.shape
+    # import ipdb;ipdb.set_trace()
 
-    # # for i in tqdm(range(world_points.shape[0]),'world_points'):
-    # #     pcd = o3d.geometry.PointCloud()
-    # #     pcd.points = o3d.utility.Vector3dVector(world_points[i].reshape(-1, 3))
-    # #     pcd.colors = o3d.utility.Vector3dVector(colors[i].reshape(-1, 3))
-    # #     save_path = os.path.join(output_dir,f'world_points_{i}.ply') # 'vggt_pcd_autocast.ply'
-    # #     o3d.io.write_point_cloud(save_path, pcd)
+    for i in tqdm(range(world_points.shape[0]),'world_points'):
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(world_points[i].reshape(-1, 3))
+        pcd.colors = o3d.utility.Vector3dVector(colors[i].reshape(-1, 3))
+        save_path = os.path.join(output_dir,f'world_points_{i}.ply') # 'vggt_pcd_autocast.ply'
+        o3d.io.write_point_cloud(save_path, pcd)
 
-    # # # Flatten
-    # # points = world_points.reshape(-1, 3)
-    # # colors_flat = (colors.reshape(-1, 3) * 255).astype(np.uint8)
-    # # conf_flat = conf.reshape(-1)
+    # Flatten
+    points = world_points.reshape(-1, 3)
+    colors_flat = (colors.reshape(-1, 3) * 255).astype(np.uint8)
+    conf_flat = conf.reshape(-1)
     
-    # # cam_to_world_mat = closed_form_inverse_se3(extrinsics_cam)  # shape (S, 4, 4) typically
-    # # # For convenience, we store only (3,4) portion
-    # # cam_to_world = cam_to_world_mat[:, :3, :]
+    cam_to_world_mat = closed_form_inverse_se3(extrinsics_cam)  # shape (S, 4, 4) typically
+    # For convenience, we store only (3,4) portion
+    cam_to_world = cam_to_world_mat[:, :3, :]
 
-    # # # Compute scene center and recenter
-    # # scene_center = np.mean(points, axis=0)
-    # # points_centered = points - scene_center
-    # # cam_to_world[..., -1] -= scene_center
+    # Compute scene center and recenter
+    scene_center = np.mean(points, axis=0)
+    points_centered = points - scene_center
+    cam_to_world[..., -1] -= scene_center
 
-    # # # Create the main point cloud handle
-    # # # Compute the threshold value as the given percentile
-    # # init_threshold_val = np.percentile(conf_flat, init_conf_threshold)
-    # # init_conf_mask = (conf_flat >= init_threshold_val) & (conf_flat > 0.1)
+    # Create the main point cloud handle
+    # Compute the threshold value as the given percentile
+    init_threshold_val = np.percentile(conf_flat, init_conf_threshold)
+    init_conf_mask = (conf_flat >= init_threshold_val) & (conf_flat > 0.1)
     
     
-    # # # save point_cloud 
-    # # pcd = o3d.geometry.PointCloud()
-    # # pcd.points = o3d.utility.Vector3dVector(points_centered[init_conf_mask])
-    # # pcd.colors = o3d.utility.Vector3dVector(colors_flat[init_conf_mask]/255)
-    # # save_path = os.path.join(output_dir,'vggt_pcd.ply') # 'vggt_pcd_autocast.ply'
-    # # o3d.io.write_point_cloud(save_path,pcd)
+    # save point_cloud 
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points_centered[init_conf_mask])
+    pcd.colors = o3d.utility.Vector3dVector(colors_flat[init_conf_mask]/255)
+    save_path = os.path.join(output_dir,'vggt_pcd.ply') # 'vggt_pcd_autocast.ply'
+    o3d.io.write_point_cloud(save_path,pcd)
 
     return 1
 
@@ -411,7 +409,7 @@ def main(args,start_index=0,n_frames=230):
 
 
 if __name__ == "__main__":
-    if 1:
+    if 0:
         args = parser.parse_args()
         if os.path.isfile(args.image_folder):
             image_names =None
@@ -433,7 +431,8 @@ if __name__ == "__main__":
                     main(args,start_index,n_frames)
     else:
         try:
-            main()
+            args = parser.parse_args()
+            main(args)
         except:
             type, value, traceback = sys.exc_info()
             ipdb.post_mortem(traceback)
