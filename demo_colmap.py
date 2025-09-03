@@ -37,7 +37,10 @@ from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np
 # TODO: add support for radial distortion, which needs extra_params
 # TODO: test with more cases
 # TODO: test different camera types
-
+import ptvsd
+ptvsd.enable_attach(address=('0.0.0.0', 5691), redirect_output=True)
+ptvsd.wait_for_attach()
+print("PTVSD attached")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="VGGT Demo")
@@ -112,7 +115,9 @@ def demo_fn(args):
     # Run VGGT for camera and depth estimation
     model = VGGT()
     _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
-    model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
+    # model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
+    # breakpoint()
+    model.load_state_dict(torch.load('/iag_ad_01/ad/yuanweizhong/ckpt/models--facebook--VGGT-1B/snapshots/860abec7937da0a4c03c41d3c269c366e82abdf9/model.pt'))
     model.eval()
     model = model.to(device)
     print(f"Model loaded")
