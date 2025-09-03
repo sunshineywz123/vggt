@@ -147,3 +147,7 @@ skyseg.onnx
 # pixi environments
 .pixi
 *.egg-info
+colmap/*
+examples/*
+scene/center_camera_fov30_3.mp4
+.vscode/
