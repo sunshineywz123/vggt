@@ -109,7 +109,9 @@ class VKittiDataset(BaseDataset):
         """
         if self.inside_random and self.training:
             seq_index = random.randint(0, self.sequence_list_len - 1)
-
+        if seq_index>self.sequence_list_len:
+            import ipdb;ipdb.set_trace()
+        print(seq_index,self.sequence_list_len)
         if seq_name is None:
             seq_name = self.sequence_list[seq_index]
 
@@ -158,6 +160,7 @@ class VKittiDataset(BaseDataset):
             depth_filepath = osp.join(self.VKitti_DIR, seq_name, f"depth_{image_idx:05d}.png").replace("/rgb", "/depth")
 
             image = read_image_cv2(image_filepath)
+            # logging.error(f"Error loading image_filepath/depth_filepath {image_filepath}: {depth_filepath}")
             depth_map = cv2.imread(depth_filepath, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
             depth_map = depth_map / 100
             depth_map = threshold_depth_map(depth_map, max_percentile=-1, min_percentile=-1, max_depth=self.depth_max)

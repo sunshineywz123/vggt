@@ -28,10 +28,16 @@ data:
     dataset:
       _target_: data.composed_dataset.ComposedDataset
       dataset_configs:
-        - _target_: data.datasets.co3d.Co3dDataset
+        # - _target_: data.datasets.co3d.Co3dDataset
+        #   split: train
+        #   CO3D_DIR: /iag_ad_01/ad/yuanweizhong/datasets/co3d
+        #   CO3D_ANNOTATION_DIR: /iag_ad_01/ad/yuanweizhong/datasets/co3d_anno
+        #   len_train: 0
+        - _target_: data.datasets.vkitti.VKittiDataset
           split: train
-          CO3D_DIR: /YOUR/PATH/TO/CO3D
-          CO3D_ANNOTATION_DIR: /YOUR/PATH/TO/CO3D_ANNOTATION
+          VKitti_DIR: /iag_ad_01/ad/hangmeng/datasets/vkitti
+          len_train: 100000
+          expand_ratio: 8 
   val:
     _target_: data.dynamic_dataloader.DynamicTorchDataset
     num_workers: ${num_workers}
@@ -43,11 +49,14 @@ data:
     dataset:
       _target_: data.composed_dataset.ComposedDataset
       dataset_configs:
-        - _target_: data.datasets.co3d.Co3dDataset
+        # - _target_: data.datasets.co3d.Co3dDataset
+        #   split: test
+        #   CO3D_DIR: /iag_ad_01/ad/yuanweizhong/datasets/co3d
+        #   CO3D_ANNOTATION_DIR: /iag_ad_01/ad/yuanweizhong/datasets/co3d_anno
+        - _target_: data.datasets.vkitti.VKittiDataset
           split: test
-          CO3D_DIR: /YOUR/PATH/TO/CO3D
-          CO3D_ANNOTATION_DIR: /YOUR/PATH/TO/CO3D_ANNOTATION
-
+          VKitti_DIR: /iag_ad_01/ad/hangmeng/datasets/vkitti
+          len_test: 10
 
 logging:
   log_dir: logs
@@ -86,7 +95,7 @@ logging:
 checkpoint:
   save_dir: logs/${exp_name}/ckpts
   save_freq: 5
-  resume_checkpoint_path: /YOUR/PATH/TO/CKPT
+  resume_checkpoint_path: /iag_ad_01/ad/yuanweizhong/ckpt/models--facebook--VGGT-1B/snapshots/860abec7937da0a4c03c41d3c269c366e82abdf9/model.pt
   strict: False
 
 

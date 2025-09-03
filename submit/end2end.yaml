@@ -1,0 +1,54 @@
+# self define e.g text_classfication
+TaskName: "vggt_train_x8_vkitt"
+# description for this task
+Description: ""
+# entry point command
+Entrypoint: "conda init --all\ncd /iag_ad_01/ad/yuanweizhong/huzeyu/vggt\nbash -x train.sh"
+Tags: []
+# the code path you want to upload locally
+UserCodePath: ""
+# remote path mount in training container
+RemoteMountCodePath: ""
+# user define env var
+Envs: []
+# queue created under Resource Group, empty as default queue
+# ResourceQueueID: "q-20250311172635-d59jd"
+#end2end
+ResourceQueueID: "q-20250805111906-vrlck"
+# distributed framework, support: TensorFlow PS,PyTorch DDP,Horovod,BytePS
+Framework: "PyTorchDDP"
+TaskRoleSpecs:
+    - RoleName: "worker"
+      RoleReplicas: 1
+      Flavor: "ml.gni3.24xlarge"
+ActiveDeadlineSeconds: 864000
+# enable tensor board or not
+EnableTensorBoard: false
+# storages
+Storages:
+    - Type: TosFuse
+      MountPath: /yuanweizhong-tos-volc-engine
+      Bucket: yuanweizhong-tos-volc-engine
+      Prefix: /
+    - Type: "Vepfs"
+      MountPath: "/iag_ad_01/ad"
+      VepfsId: "vepfs-cnsh7222c217a665"
+      SubPath: "ad"
+ImageUrl: "vemlp-cn-shanghai.cr.volces.com/preset-images/pytorch:2.7.1-cu11.8.0-py3.12-ubuntu22.04"
+CacheType: "Cloudfs"
+# user define retry options
+RetryOptions:
+    EnableRetry: false
+    MaxRetryTimes: 5
+    IntervalSeconds: 120
+    PolicySets: []
+# diagnosis options
+DiagOptions:
+    - Name: "EnvironmentalDiagnosis"
+      Enable: false
+    - Name: "PythonDetection"
+      Enable: false
+    - Name: "LogDetection"
+      Enable: false
+    - Name: "PySpyDump"
+      Enable: false
