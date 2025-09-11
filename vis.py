@@ -27,6 +27,15 @@ from vggt.utils.load_fn import load_and_preprocess_images_square
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.dependency.track_predict import predict_tracks
 from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap
+from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+import open3d as o3d
+import roma
+from scipy.spatial.distance import pdist
+import ipdb
+import sys
+if 1:
+    import ptvsd
+    ptvsd.enable_attach(address=('0.0.0.0', 5691), redirect_output=True)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="VGGT Demo with GT Camera")
@@ -138,7 +147,204 @@ def read_extrinsics_from_txt(extrinsics_dir, image_paths):
             extrinsics.append(list(extrinsic_dict.values())[0][:3, :])
 
     return np.array(extrinsics)
+def run_VGGT(model, images, dtype, resolution=518):
+    # images: [B, 3, H, W]
 
+    assert len(images.shape) == 4
+    assert images.shape[1] == 3
+
+    # hard-coded to use 518 for VGGT
+    images = F.interpolate(images, size=(resolution, resolution), mode="bilinear", align_corners=False)
+
+    with torch.no_grad():
+        with torch.cuda.amp.autocast(dtype=dtype):
+            images = images[None]  # add batch dimension
+            aggregated_tokens_list, ps_idx = model.aggregator(images)
+
+        # Predict Cameras
+        pose_enc = model.camera_head(aggregated_tokens_list)[-1]
+        # Extrinsic and intrinsic matrices, following OpenCV convention (camera from world)
+        extrinsic, intrinsic = pose_encoding_to_extri_intri(pose_enc, images.shape[-2:])
+        # Predict Depth Maps
+        depth_map, depth_conf = model.depth_head(aggregated_tokens_list, images, ps_idx)
+
+    extrinsic = extrinsic.squeeze(0).cpu().numpy()
+    intrinsic = intrinsic.squeeze(0).cpu().numpy()
+    depth_map = depth_map.squeeze(0).cpu().numpy()
+    depth_conf = depth_conf.squeeze(0).cpu().numpy()
+    return extrinsic, intrinsic, depth_map, depth_conf
+
+def vis_o3d_pcd_1(cloud,color = [1,1,1]):    
+    pcd=o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(cloud)
+    pcd.paint_uniform_color(color)
+    o3d.visualization.draw_geometries([pcd])
+
+def vis_o3d_pcd_2(cloud1,cloud2,color1 = [1,1,1],color2 = [1,1,1]):
+    
+    pcd1=o3d.geometry.PointCloud()
+    pcd1.points = o3d.utility.Vector3dVector(cloud1)
+    pcd1.paint_uniform_color(color1)
+    pcd2=o3d.geometry.PointCloud()
+    pcd2.points = o3d.utility.Vector3dVector(cloud2)
+    pcd2.paint_uniform_color(color2)
+
+    o3d.visualization.draw_geometries([pcd1,pcd2])
+    
+
+def visualize_camera_poses(poses_tensor1, poses_tensor2, size=0.1, show_coordinate_frame=True):
+    
+    # 创建Open3D可视化对象
+    vis = o3d.visualization.Visualizer()
+    vis.create_window()
+    
+    # 转换为NumPy数组
+    poses1 = poses_tensor1.numpy()
+    poses2 = poses_tensor2.numpy()
+    
+    # 添加第一个相机的位姿
+    for i, pose in enumerate(poses1):
+        camera = o3d.geometry.TriangleMesh.create_coordinate_frame(size=size)
+        camera.transform(pose)
+        camera.paint_uniform_color([1, 0, 0])  # 红色表示第一个相机
+        vis.add_geometry(camera)
+    
+    # 添加第二个相机的位姿
+    for i, pose in enumerate(poses2):
+        camera = o3d.geometry.TriangleMesh.create_coordinate_frame(size=size)
+        camera.transform(pose)
+        camera.paint_uniform_color([0, 0, 1])  # 蓝色表示第二个相机
+        vis.add_geometry(camera)
+    
+    # 可选：添加全局坐标系
+    # if show_coordinate_frame:
+    #     world_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
+    #     vis.add_geometry(world_frame)
+    
+    vis.run()
+    vis.destroy_window()
+
+def visualize_camera_poses1(poses_tensor1, size=0.1, show_coordinate_frame=True):
+    
+    # 创建Open3D可视化对象
+    vis = o3d.visualization.Visualizer()
+    vis.create_window()
+    
+    # 转换为NumPy数组
+    poses1 = poses_tensor1.numpy()
+    
+    
+    # 添加第一个相机的位姿
+    for i, pose in enumerate(poses1):
+        camera = o3d.geometry.TriangleMesh.create_coordinate_frame(size=size)
+        camera.transform(pose)
+        camera.paint_uniform_color([1, i/3, 0])  # 红色表示第一个相机
+        vis.add_geometry(camera)
+    
+
+    
+    # 可选：添加全局坐标系
+    # if show_coordinate_frame:
+    #     world_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
+    #     vis.add_geometry(world_frame)
+    
+    vis.run()
+    vis.destroy_window()
+
+def get_med_dist_between_poses(poses):
+    
+    return np.median(pdist([p[:3, 3].numpy() for p in poses]))
+
+def align_multiple_poses(src_poses, target_poses):
+    N = len(src_poses)
+    assert src_poses.shape == target_poses.shape == (N, 4, 4)
+
+    def center_and_z(poses):
+        eps = get_med_dist_between_poses(poses) / 10
+        return torch.cat((poses[:, :3, 3], poses[:, :3, 3] + eps*poses[:, :3, 2]))
+    R, T, s = roma.rigid_points_registration(center_and_z(src_poses), center_and_z(target_poses), compute_scaling=True)
+    # import open3d as o3d
+
+    return s, R, T
+
+def signed_log1p(x):
+    sign = torch.sign(x)
+    return sign * torch.log1p(torch.abs(x))
+
+def rotate_points_with_srt(source_points, s, R, t):
+
+    # 1. 处理缩放（先应用缩放）
+    if isinstance(s, (float, int)):
+        # 标量缩放：所有维度等比例缩放
+        scaled_points = source_points * s
+    else:
+        # 各维度独立缩放（假设s是3维向量）
+        scaled_points = source_points * s.reshape(1, -1)  # (N,3) * (1,3)
+    
+    # 2. 应用旋转变换（矩阵乘法）
+    rotated_points = torch.matmul(scaled_points, R.T)  # (N,3) @ (3,3) = (N,3)
+    
+    # 3. 应用平移变换
+    rotated_points = rotated_points + t.reshape(1, -1)  # (N,3) + (1,3)
+    
+    return rotated_points
+
+def rotate_cameras_with_srt(poses, s,R,t):
+
+
+    
+    # 创建4×4的SRT变换矩阵
+    srt_matrix = torch.eye(4, device=poses.device)
+    srt_matrix[:3, :3] = s * R  # 缩放和旋转
+    srt_matrix[:3, 3] = t       # 平移
+    
+    # 对每个相机位姿应用SRT变换
+    # 注意：相机位姿通常是从世界坐标系到相机坐标系的变换
+    # 因此，我们需要右乘SRT变换矩阵
+    transformed_poses = srt_matrix @ poses
+    
+    return transformed_poses
+
+
+def read_colmap_camera(colmap_camera_path):
+    with open(colmap_camera_path, 'r', encoding='utf-8') as file:
+        lines = file.readlines()
+        line = lines[3:][0]
+        image_W,image_H,focal_x,focal_y,cx,cy = [float(i) for i in line.split()[2:]]
+
+    return image_W,image_H,focal_x,focal_y,cx,cy
+
+def read_colmap_gt(colmap_images_path):
+    # colmap_images_path = "sparse_DTU/set_23_24_33/scan40/sparse/0/images.txt"
+    # colmap_images_path = "sparse_DTU/wo_pose/scan24/sparse/0/images.txt"
+    with open(colmap_images_path, 'r', encoding='utf-8') as file:
+        lines = file.readlines()
+        lines = lines[4:]
+        poses = torch.zeros(int(len(lines)/2),7)
+        for idx,line in enumerate(lines):
+            if idx % 2 == 0:
+                line_splited = line.split()
+                image_idx = int(line_splited[-1][:4])
+                pose = torch.tensor([float(line_splited[2]),float(line_splited[3]),float(line_splited[4]),float(line_splited[1]),float(line_splited[5]),float(line_splited[6]),float(line_splited[7])])
+                poses[image_idx] = pose
+
+    poses_R = []
+    for pose in poses:
+        q_x, q_y, q_z,q_w,t_x,t_y,t_z = pose
+
+        R = torch.eye(4)
+        R_3 = torch.tensor([
+            [1 - 2 * q_y ** 2 - 2 * q_z ** 2, 2 * (q_x * q_y - q_w * q_z), 2 * (q_x * q_z + q_w * q_y)],
+            [2 * (q_x * q_y + q_w * q_z), 1 - 2 * q_x ** 2 - 2 * q_z ** 2, 2 * (q_y * q_z - q_w * q_x)],
+            [2 * (q_x * q_z - q_w * q_y), 2 * (q_y * q_z + q_w * q_x), 1 - 2 * q_x ** 2 - 2 * q_y ** 2]
+            ])
+        t = torch.tensor([t_x,t_y,t_z])
+
+        R[:3, :3] = R_3
+        R[:3, 3] = t
+
+        poses_R.append(R.inverse())
+    return torch.stack(poses_R,dim = 0)[:,:3,:]
 def demo_fn(args):
     print("Arguments:", vars(args))
 
@@ -191,13 +397,20 @@ def demo_fn(args):
     gt_extrinsic = read_extrinsics_from_txt(args.extrinsics_dir, image_path_list)
     print(f"Loaded {len(gt_extrinsic)} extrinsic matrices")
 
+    gt_pose = gt_extrinsic
+    last_row = torch.tensor([0, 0, 0, 1]).expand(gt_pose.shape[0], 1, 4)
+    gt_pose44 = torch.cat([torch.tensor(gt_pose), last_row], dim=1)
     print("Loaded GT camera parameters and poses")
-
-    # 只使用VGGT预测深度图
-    depth_map, depth_conf = run_VGGT_depth_only(model, images, dtype, vggt_fixed_resolution)
-
-    # 使用真值内外参生成3D点云
-    points_3d = unproject_depth_map_to_point_map(depth_map, gt_extrinsic, gt_intrinsic)
+    extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
+    extrinsic44 = torch.cat([torch.tensor(extrinsic), last_row], dim=1)
+    extrinsic44 = torch.inverse(extrinsic44)
+    s, R, T = align_multiple_poses(extrinsic44.double(),gt_pose44.double())
+    points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
+    # conf_thres_value = args.conf_thres_value
+    # conf_mask = depth_conf > conf_thres_value
+    # conf_mask = randomly_limit_trues(conf_mask,max_points_for_colmap)
+    
+    points_3d_trans2gt = rotate_points_with_srt(torch.tensor(points_3d).float(),s,R,T).numpy()
 
     # VGGT+BA重建流程
     image_size = np.array([img_load_resolution, img_load_resolution])
@@ -206,10 +419,10 @@ def demo_fn(args):
 
     with torch.cuda.amp.autocast(dtype=dtype):
         # 预测轨迹
-        pred_tracks, pred_vis_scores, pred_confs, points_3d, points_rgb = predict_tracks(
+        pred_tracks, pred_vis_scores, pred_confs, points_3d_trans2gt, points_rgb = predict_tracks(
             images,
             conf=depth_conf,
-            points_3d=points_3d,
+            points_3d=points_3d_trans2gt,
             masks=None,
             max_query_pts=args.max_query_pts,
             query_frame_num=args.query_frame_num,
@@ -218,15 +431,17 @@ def demo_fn(args):
         )
         torch.cuda.empty_cache()
 
+    # breakpoint()
     # 缩放内参矩阵从518到1024
     gt_intrinsic_scaled = gt_intrinsic.copy()
     gt_intrinsic_scaled[:, :2, :] *= scale
 
     track_mask = pred_vis_scores > args.vis_thresh
 
+    # import ipdb;ipdb.set_trace()
     # 使用真值内外参进行COLMAP重建
     reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
-        points_3d,
+        points_3d_trans2gt,
         gt_extrinsic,          # 使用真值外参
         gt_intrinsic_scaled,   # 使用真值内参（已缩放）
         pred_tracks,
@@ -264,7 +479,7 @@ def demo_fn(args):
     reconstruction.write(sparse_reconstruction_dir)
 
     # 保存点云
-    trimesh.PointCloud(points_3d, colors=points_rgb).export(
+    trimesh.PointCloud(points_3d_trans2gt, colors=points_rgb).export(
         os.path.join(args.scene_dir, "sparse/gt_camera_ba/points.ply")
     )
 
@@ -306,4 +521,11 @@ def rename_colmap_recons_and_rescale_camera(
 if __name__ == "__main__":
     args = parse_args()
     with torch.no_grad():
-        demo_fn(args)
+        if 1:
+            demo_fn(args)
+        else:
+            try:
+                demo_fn(args)
+            except:
+                _,_,tb = sys.exc_info()
+                ipdb.post_mortem(tb)
