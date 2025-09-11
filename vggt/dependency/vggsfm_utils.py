@@ -37,7 +37,7 @@ def build_vggsfm_tracker(model_path=None):
         Initialized tracker model in eval mode.
     """
     tracker = TrackerPredictor()
-    model_path = '../ckpt/vggsfm_v2_tracker.pt'
+    model_path = '/iag_ad_01/ad/yuanweizhong/ckpt/vggsfm_v2_tracker.pt'
     if model_path is None:
         default_url = "https://huggingface.co/facebook/VGGSfM/resolve/main/vggsfm_v2_tracker.pt"
         tracker.load_state_dict(torch.hub.load_state_dict_from_url(default_url))

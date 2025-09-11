@@ -154,3 +154,6 @@ scene/center_camera_fov30_3.mp4
 
 training/logs/
 scene/
+demo_colmap.py
+dinov3_vits16_pretrain_lvd1689m-08c60483.pth
+*.pth

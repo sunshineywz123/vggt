@@ -109,9 +109,9 @@ class VKittiDataset(BaseDataset):
         """
         if self.inside_random and self.training:
             seq_index = random.randint(0, self.sequence_list_len - 1)
-        if seq_index>self.sequence_list_len:
-            import ipdb;ipdb.set_trace()
-        print(seq_index,self.sequence_list_len)
+        # if seq_index>self.sequence_list_len:
+        #     import ipdb;ipdb.set_trace()
+        # print(seq_index,self.sequence_list_len)
         if seq_name is None:
             seq_name = self.sequence_list[seq_index]
 
