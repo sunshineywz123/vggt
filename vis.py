@@ -4,11 +4,12 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import random
-import numpy as np
+import copy
 import glob
 import os
-import copy
+import random
+
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -18,21 +19,23 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.deterministic = False
 
 import argparse
-from pathlib import Path
-import trimesh
-import pycolmap
-
-from vggt.models.vggt import VGGT
-from vggt.utils.load_fn import load_and_preprocess_images_square
-from vggt.utils.geometry import unproject_depth_map_to_point_map
-from vggt.dependency.track_predict import predict_tracks
-from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap
-from vggt.utils.pose_enc import pose_encoding_to_extri_intri
-import open3d as o3d
-import roma
-from scipy.spatial.distance import pdist
-import ipdb
 import sys
+from pathlib import Path
+
+import ipdb
+import open3d as o3d
+import pycolmap
+import roma
+import trimesh
+from scipy.spatial.distance import pdist
+
+from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap
+from vggt.dependency.track_predict import predict_tracks
+from vggt.models.vggt import VGGT
+from vggt.utils.geometry import unproject_depth_map_to_point_map
+from vggt.utils.load_fn import load_and_preprocess_images_square
+from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+
 if 1:
     import ptvsd
     ptvsd.enable_attach(address=('0.0.0.0', 5691), redirect_output=True)
@@ -41,7 +44,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="VGGT Demo with GT Camera")
     parser.add_argument("--scene_dir", type=str, required=True, help="Directory containing the scene images")
     parser.add_argument("--intrinsics_dir", type=str, required=True, help="Directory containing intrinsic parameter txt files")
-    parser.add_argument("--extrinsics_dir", type=str, required=True, help="Directory containing extrinsic parameter txt files")
+    # parser.add_argument("--extrinsics_dir", type=str, required=True, help="Directory containing extrinsic parameter txt files")
+    parser.add_argument("--poses_dir", type=str, required=True, help="Directory containing poses parameter txt files")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--max_reproj_error", type=float, default=8.0, help="Maximum reprojection error for reconstruction")
     parser.add_argument("--camera_type", type=str, default="SIMPLE_PINHOLE", help="Camera type for reconstruction")
@@ -132,8 +136,9 @@ def read_extrinsics_from_txt(extrinsics_dir, image_paths):
         timestamp = extract_timestamp_from_filename(os.path.basename(extrinsic_file))
         extrinsic_matrix = np.loadtxt(extrinsic_file)
         assert extrinsic_matrix.shape == (4, 4), f"Extrinsic matrix in {extrinsic_file} should be 4x4"
-        extrinsic_dict[timestamp] = extrinsic_matrix
-        # extrinsic_dict[timestamp] = np.linalg.inv(extrinsic_matrix)
+        # extrinsic_dict[timestamp] = extrinsic_matrix
+        #输入是pose camera{i}2camera0
+        extrinsic_dict[timestamp] = np.linalg.inv(extrinsic_matrix)
 
     # 为每张图像匹配对应的外参
     for image_path in image_paths:
@@ -148,6 +153,39 @@ def read_extrinsics_from_txt(extrinsics_dir, image_paths):
             extrinsics.append(list(extrinsic_dict.values())[0][:3, :])
 
     return np.array(extrinsics)
+def read_poses_from_txt(poses_dir, image_paths):
+    """
+    从txt文件中读取外参矩阵
+    每个txt文件包含一个4x4的姿态矩阵
+    """
+    poses = []
+
+    # 获取所有外参文件
+    pose_files = glob.glob(os.path.join(poses_dir, "*.txt"))
+    pose_dict = {}
+
+    # 读取所有外参文件并建立时间戳映射
+    for pose_file in pose_files:
+        timestamp = extract_timestamp_from_filename(os.path.basename(pose_file))
+        pose_matrix = np.loadtxt(pose_file)
+        assert pose_matrix.shape == (4, 4), f"Extrinsic matrix in {pose_file} should be 4x4"
+        pose_dict[timestamp] = pose_matrix
+        #输入是pose camera{i}2camera0
+        # pose_dict[timestamp] = np.linalg.inv(pose_matrix)
+
+    # 为每张图像匹配对应的外参
+    for image_path in image_paths:
+        image_timestamp = extract_timestamp_from_filename(os.path.basename(image_path))
+
+        if image_timestamp in pose_dict:
+            # 取前3行（旋转矩阵和平移向量），符合COLMAP格式
+            poses.append(pose_dict[image_timestamp][:3, :])
+        else:
+            # 如果找不到对应的外参，使用第一个可用的外参
+            print(f"Warning: No extrinsic found for {image_path}, using first available extrinsic")
+            poses.append(list(pose_dict.values())[0][:3, :])
+
+    return np.array(poses)
 def run_VGGT(model, images, dtype, resolution=518):
     # images: [B, 3, H, W]
 
@@ -461,7 +499,7 @@ def demo_fn(args):
     image_path_list.sort()
     base_image_path_list = [os.path.basename(path) for path in image_path_list]
 
-    sample = 30
+    sample = 20
     # Load images
     vggt_fixed_resolution = 518
     img_load_resolution = 1024
@@ -477,17 +515,20 @@ def demo_fn(args):
     gt_intrinsic = read_intrinsics_from_txt(args.intrinsics_dir, image_path_list)[:sample]
     print(f"Loaded {len(gt_intrinsic)} intrinsic matrices")
 
-    print("Reading extrinsic parameters...")
-    gt_extrinsic = read_extrinsics_from_txt(args.extrinsics_dir, image_path_list)[:sample]
-    print(f"Loaded {len(gt_extrinsic)} extrinsic matrices")
+    # print("Reading extrinsic parameters...")
+    # gt_extrinsic = read_extrinsics_from_txt(args.extrinsics_dir, image_path_list)[:sample]
+    # print(f"Loaded {len(gt_extrinsic)} extrinsic matrices")
+    print("Reading poses parameters...")
+    gt_pose = read_poses_from_txt(args.poses_dir, image_path_list)[:sample]
+    print(f"Loaded {len(gt_pose)} poses matrices")
 
-    gt_pose = gt_extrinsic
+    # gt_pose = gt_extrinsic
     last_row = torch.tensor([0, 0, 0, 1]).expand(gt_pose.shape[0], 1, 4)
     gt_pose44 = torch.cat([torch.tensor(gt_pose), last_row], dim=1)
     print("Loaded GT camera parameters and poses")
     extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
     extrinsic44 = torch.cat([torch.tensor(extrinsic), last_row], dim=1)
-    # extrinsic44 = torch.inverse(extrinsic44)
+    extrinsic44 = torch.inverse(extrinsic44)
     extrinsic44_first =  convert_camera_pose2_first_tensor(extrinsic44)
     extrinsic44 = extrinsic44_first
     gt_pose44_first =  convert_camera_pose2_first_tensor(gt_pose44)
@@ -514,7 +555,11 @@ def demo_fn(args):
     o3d.io.write_point_cloud("points_3d_trans2gt.ply", points_3d_trans2gt_pcd)
     # VGGT+BA重建流程
     image_size = np.array([img_load_resolution, img_load_resolution])
-    scale = img_load_resolution / vggt_fixed_resolution
+    # scale = img_load_resolution / vggt_fixed_resolution
+    # Calculate scale factor for resizing
+    max_dim = 3840
+    target_size = 1024
+    scale = target_size / max_dim
     shared_camera = True  # 使用共享相机
 
     with torch.cuda.amp.autocast(dtype=dtype):
@@ -533,17 +578,21 @@ def demo_fn(args):
 
     # breakpoint()
     # 缩放内参矩阵从518到1024
-    gt_intrinsic_scaled = gt_intrinsic.copy()
-    # gt_intrinsic_scaled[:, :2, :] *= scale
 
+    #3840--》1024
+    gt_intrinsic_scaled = gt_intrinsic.copy()
+    gt_intrinsic_scaled[:, :2, :] *= scale
+    gt_intrinsic_scaled_new = gt_intrinsic_scaled.copy()
+    gt_intrinsic_scaled_new[..., 1, 2] = gt_intrinsic_scaled[..., 0, 2]
     track_mask = pred_vis_scores > args.vis_thresh
 
     # import ipdb;ipdb.set_trace()
     # 使用真值内外参进行COLMAP重建
     reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
         points_3d_trans2gt,
-        gt_extrinsic,          # 使用真值外参
-        gt_intrinsic_scaled,   # 使用真值内参（已缩放）
+        # gt_extrinsic,          # 使用真值外参
+        torch.inverse(gt_pose44)[:,:3,:],
+        gt_intrinsic_scaled_new,   # 使用真值内参（已缩放）
         pred_tracks,
         image_size,
         masks=track_mask,
