@@ -133,6 +133,7 @@ def read_extrinsics_from_txt(extrinsics_dir, image_paths):
         extrinsic_matrix = np.loadtxt(extrinsic_file)
         assert extrinsic_matrix.shape == (4, 4), f"Extrinsic matrix in {extrinsic_file} should be 4x4"
         extrinsic_dict[timestamp] = extrinsic_matrix
+        # extrinsic_dict[timestamp] = np.linalg.inv(extrinsic_matrix)
 
     # 为每张图像匹配对应的外参
     for image_path in image_paths:
@@ -345,6 +346,86 @@ def read_colmap_gt(colmap_images_path):
 
         poses_R.append(R.inverse())
     return torch.stack(poses_R,dim = 0)[:,:3,:]
+def convert_camera_pose2_first(poses: np.ndarray):
+    out_put_pose = np.zeros_like(poses)
+    R0 = poses[0][:, : 3].copy()
+    R0_inv = R0.T
+    t0_inv = - (R0_inv @ (poses[0][:, 3])).copy()
+    N = poses.shape[0]
+    for i in range(N):
+        R_w_cari =  (poses[i][:,:3]).copy()
+        t_w_cari =  (poses[i][:,3]).copy()
+        out_put_pose[i][:,:3] = R0_inv @ R_w_cari
+        out_put_pose[i][:, 3] = (R0_inv @ t_w_cari) + t0_inv
+        # print(poses[i][:, 3])
+    return out_put_pose
+# def convert_camera_pose2_first_tensor(poses: torch.Tensor) -> torch.Tensor:
+#     """
+#     Converts a batch of camera poses such that the first pose in the batch
+#     becomes the origin.  This is done using torch tensors.
+
+#     Args:
+#         poses (torch.Tensor): A tensor of shape (N, 4, 3) or (N, 3, 4) representing
+#                              N camera poses. Each pose is a 4x3 or 3x4 matrix
+#                              where the first three columns/rows represent the
+#                              rotation matrix and the last column/row represents
+#                              the translation vector.
+
+#     Returns:
+#         torch.Tensor: A tensor of the same shape as the input, but with the
+#                       poses transformed relative to the first pose.
+#     """
+#     N = poses.shape[0]
+#     out_put_pose = torch.zeros_like(poses)
+
+#     R0 = poses[0, :, :3].clone()  # Ensure no in-place modification issues
+#     R0_inv = R0.T
+#     t0 = poses[0, :, 3].clone()
+#     t0_inv = -torch.matmul(R0_inv, t0)
+
+#     for i in range(N):
+#         R_w_cari = poses[i, :, :3].clone()
+#         t_w_cari = poses[i, :, 3].clone()
+
+#         out_put_pose[i, :, :3] = torch.matmul(R0_inv, R_w_cari)
+#         out_put_pose[i, :, 3] = torch.matmul(R0_inv, t_w_cari) + t0_inv
+
+#     return out_put_pose
+def convert_camera_pose2_first_tensor(poses: torch.Tensor) -> torch.Tensor:
+    """
+    Converts a batch of camera poses such that the first pose in the batch
+    becomes the origin. This function supports N x 4 x 4 pose tensors.
+
+    Args:
+        poses (torch.Tensor): A tensor of shape (N, 4, 4) representing N camera poses.
+                             Each pose is a 4x4 homogeneous transformation matrix.
+
+    Returns:
+        torch.Tensor: A tensor of the same shape as the input, but with the
+                      poses transformed relative to the first pose.
+    """
+    N = poses.shape[0]
+    out_put_pose = torch.zeros_like(poses)
+
+    # Extract the first pose
+    T0 = poses[0].clone()
+
+    # Compute the inverse of the first pose
+    R0 = T0[:3, :3]
+    t0 = T0[:3, 3]
+    R0_inv = R0.T
+    t0_inv = -torch.matmul(R0_inv, t0)
+
+    T0_inv = torch.eye(4, dtype=poses.dtype, device=poses.device)
+    T0_inv[:3, :3] = R0_inv
+    T0_inv[:3, 3] = t0_inv
+
+    # Convert all poses to the coordinate system of the first pose
+    for i in range(N):
+        T_w_cari = poses[i].clone()
+        out_put_pose[i] = torch.matmul(T0_inv, T_w_cari)
+
+    return out_put_pose
 def demo_fn(args):
     print("Arguments:", vars(args))
 
@@ -380,21 +461,24 @@ def demo_fn(args):
     image_path_list.sort()
     base_image_path_list = [os.path.basename(path) for path in image_path_list]
 
+    sample = 30
     # Load images
     vggt_fixed_resolution = 518
     img_load_resolution = 1024
     images, original_coords = load_and_preprocess_images_square(image_path_list, img_load_resolution)
+    images = images[:sample]
+    original_coords=original_coords[:sample]
     images = images.to(device)
     original_coords = original_coords.to(device)
     print(f"Loaded {len(images)} images from {image_dir}")
 
     # 读取真值相机内参和外参
     print("Reading intrinsic parameters...")
-    gt_intrinsic = read_intrinsics_from_txt(args.intrinsics_dir, image_path_list)
+    gt_intrinsic = read_intrinsics_from_txt(args.intrinsics_dir, image_path_list)[:sample]
     print(f"Loaded {len(gt_intrinsic)} intrinsic matrices")
 
     print("Reading extrinsic parameters...")
-    gt_extrinsic = read_extrinsics_from_txt(args.extrinsics_dir, image_path_list)
+    gt_extrinsic = read_extrinsics_from_txt(args.extrinsics_dir, image_path_list)[:sample]
     print(f"Loaded {len(gt_extrinsic)} extrinsic matrices")
 
     gt_pose = gt_extrinsic
@@ -403,15 +487,31 @@ def demo_fn(args):
     print("Loaded GT camera parameters and poses")
     extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
     extrinsic44 = torch.cat([torch.tensor(extrinsic), last_row], dim=1)
-    extrinsic44 = torch.inverse(extrinsic44)
+    # extrinsic44 = torch.inverse(extrinsic44)
+    extrinsic44_first =  convert_camera_pose2_first_tensor(extrinsic44)
+    extrinsic44 = extrinsic44_first
+    gt_pose44_first =  convert_camera_pose2_first_tensor(gt_pose44)
+    gt_pose44 = gt_pose44_first
     s, R, T = align_multiple_poses(extrinsic44.double(),gt_pose44.double())
+    T = T.reshape(3, -1)
+    source_point = extrinsic44[:,:,-1][:,:3]
+    transform_point = s*np.matmul(R , source_point.T)+ T
+    # print("align_pose: ")
+    # cout(transform_point.T)
+    print("transform_point.T")
+    print(transform_point.T)
+    print("gt_pose44[:,:,-1][:,:3]")
+    print(gt_pose44[:,:,-1][:,:3])
+
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
     # conf_thres_value = args.conf_thres_value
     # conf_mask = depth_conf > conf_thres_value
     # conf_mask = randomly_limit_trues(conf_mask,max_points_for_colmap)
     
     points_3d_trans2gt = rotate_points_with_srt(torch.tensor(points_3d).float(),s,R,T).numpy()
-
+    points_3d_trans2gt_pcd =o3d.geometry.PointCloud()
+    points_3d_trans2gt_pcd.points = o3d.utility.Vector3dVector(points_3d_trans2gt.reshape(-1,3))  
+    o3d.io.write_point_cloud("points_3d_trans2gt.ply", points_3d_trans2gt_pcd)
     # VGGT+BA重建流程
     image_size = np.array([img_load_resolution, img_load_resolution])
     scale = img_load_resolution / vggt_fixed_resolution
@@ -434,7 +534,7 @@ def demo_fn(args):
     # breakpoint()
     # 缩放内参矩阵从518到1024
     gt_intrinsic_scaled = gt_intrinsic.copy()
-    gt_intrinsic_scaled[:, :2, :] *= scale
+    # gt_intrinsic_scaled[:, :2, :] *= scale
 
     track_mask = pred_vis_scores > args.vis_thresh
 
