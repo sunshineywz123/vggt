@@ -29,16 +29,18 @@ import roma
 import trimesh
 from scipy.spatial.distance import pdist
 
-from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap
+from vggt.dependency.np_to_pycolmap import (
+    batch_np_matrix_to_pycolmap, batch_np_matrix_to_pycolmap_wo_track)
 from vggt.dependency.track_predict import predict_tracks
 from vggt.models.vggt import VGGT
 from vggt.utils.geometry import unproject_depth_map_to_point_map
+from vggt.utils.helper import create_pixel_coordinate_grid
 from vggt.utils.load_fn import load_and_preprocess_images_square
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
-if 1:
-    import ptvsd
-    ptvsd.enable_attach(address=('0.0.0.0', 5691), redirect_output=True)
+# if 1:
+#     import ptvsd
+#     ptvsd.enable_attach(address=('0.0.0.0', 5691), redirect_output=True)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="VGGT Demo with GT Camera")
@@ -530,21 +532,20 @@ def demo_fn(args):
     extrinsic44 = torch.cat([torch.tensor(extrinsic), last_row], dim=1)
     extrinsic44 = torch.inverse(extrinsic44)
     extrinsic44_first =  convert_camera_pose2_first_tensor(extrinsic44)
-    extrinsic44 = extrinsic44_first
     gt_pose44_first =  convert_camera_pose2_first_tensor(gt_pose44)
-    gt_pose44 = gt_pose44_first
-    s, R, T = align_multiple_poses(extrinsic44.double(),gt_pose44.double())
+    s, R, T = align_multiple_poses(extrinsic44_first.double(),gt_pose44_first.double())
     T = T.reshape(3, -1)
-    source_point = extrinsic44[:,:,-1][:,:3]
+    source_point = extrinsic44_first[:,:,-1][:,:3]
     transform_point = s*np.matmul(R , source_point.T)+ T
     # print("align_pose: ")
     # cout(transform_point.T)
     print("transform_point.T")
     print(transform_point.T)
-    print("gt_pose44[:,:,-1][:,:3]")
-    print(gt_pose44[:,:,-1][:,:3])
+    print("gt_pose44_first[:,:,-1][:,:3]")
+    print(gt_pose44_first[:,:,-1][:,:3])
 
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
+    # breakpoint()
     # conf_thres_value = args.conf_thres_value
     # conf_mask = depth_conf > conf_thres_value
     # conf_mask = randomly_limit_trues(conf_mask,max_points_for_colmap)
@@ -561,7 +562,28 @@ def demo_fn(args):
     target_size = 1024
     scale = target_size / max_dim
     shared_camera = True  # 使用共享相机
+    #3840--》1024
+    gt_intrinsic_scaled = gt_intrinsic.copy()
+    gt_intrinsic_scaled[:, :2, :] *= scale
+    gt_intrinsic_scaled_new = gt_intrinsic_scaled.copy()
+    gt_intrinsic_scaled_new[..., 1, 2] = gt_intrinsic_scaled[..., 0, 2]
 
+    #(S,H,W,3),with x,y coordinates and frame indices
+    num_frames,height, width,_ = points_3d.shape
+    points_xyf = create_pixel_coordinate_grid(num_frames,height, width)
+    points_rgb = F.interpolate(images, size=(vggt_fixed_resolution, vggt_fixed_resolution), mode="bilinear", align_corners=False)
+    points_rgb = (points_rgb.cpu().numpy()*255).astype(np.uint8)
+    points_rgb = points_rgb.transpose(0, 2, 3, 1).reshape(-1, 3)
+    reconstruction = batch_np_matrix_to_pycolmap_wo_track(
+        points_3d_trans2gt.reshape(-1,3),
+        points_xyf.reshape(-1,3),
+        points_rgb,
+        torch.inverse(gt_pose44)[:,:3,:],  # extrinsics
+        gt_intrinsic_scaled_new,   # intrinsics (已缩放)
+        image_size,
+        shared_camera=shared_camera,
+        camera_type=args.camera_type
+    )
     with torch.cuda.amp.autocast(dtype=dtype):
         # 预测轨迹
         pred_tracks, pred_vis_scores, pred_confs, points_3d_trans2gt, points_rgb = predict_tracks(
@@ -579,11 +601,6 @@ def demo_fn(args):
     # breakpoint()
     # 缩放内参矩阵从518到1024
 
-    #3840--》1024
-    gt_intrinsic_scaled = gt_intrinsic.copy()
-    gt_intrinsic_scaled[:, :2, :] *= scale
-    gt_intrinsic_scaled_new = gt_intrinsic_scaled.copy()
-    gt_intrinsic_scaled_new[..., 1, 2] = gt_intrinsic_scaled[..., 0, 2]
     track_mask = pred_vis_scores > args.vis_thresh
 
     # import ipdb;ipdb.set_trace()
@@ -601,7 +618,6 @@ def demo_fn(args):
         camera_type=args.camera_type,
         points_rgb=points_rgb,
     )
-
     breakpoint()
     if reconstruction is None:
         raise ValueError("No reconstruction can be built with BA")
