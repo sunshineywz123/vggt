@@ -38,9 +38,9 @@ from vggt.utils.helper import create_pixel_coordinate_grid
 from vggt.utils.load_fn import load_and_preprocess_images_square
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
-# if 1:
-#     import ptvsd
-#     ptvsd.enable_attach(address=('0.0.0.0', 5691), redirect_output=True)
+if 1:
+    import ptvsd
+    ptvsd.enable_attach(address=('0.0.0.0', 5692), redirect_output=True)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="VGGT Demo with GT Camera")
@@ -138,9 +138,9 @@ def read_extrinsics_from_txt(extrinsics_dir, image_paths):
         timestamp = extract_timestamp_from_filename(os.path.basename(extrinsic_file))
         extrinsic_matrix = np.loadtxt(extrinsic_file)
         assert extrinsic_matrix.shape == (4, 4), f"Extrinsic matrix in {extrinsic_file} should be 4x4"
-        # extrinsic_dict[timestamp] = extrinsic_matrix
-        #输入是pose camera{i}2camera0
-        extrinsic_dict[timestamp] = np.linalg.inv(extrinsic_matrix)
+        extrinsic_dict[timestamp] = extrinsic_matrix
+        # #输入是pose camera{i}2camera0
+        # extrinsic_dict[timestamp] = np.linalg.inv(extrinsic_matrix)
 
     # 为每张图像匹配对应的外参
     for image_path in image_paths:
@@ -304,10 +304,68 @@ def align_multiple_poses(src_poses, target_poses):
         eps = get_med_dist_between_poses(poses) / 10
         return torch.cat((poses[:, :3, 3], poses[:, :3, 3] + eps*poses[:, :3, 2]))
     R, T, s = roma.rigid_points_registration(center_and_z(src_poses), center_and_z(target_poses), compute_scaling=True)
-    # import open3d as o3d
 
     return s, R, T
+def umeyama_alignment(x: np.ndarray, y: np.ndarray,
+                      with_scale: bool = False):
+    """
+    Computes the least squares solution parameters of an Sim(m) matrix
+    that minimizes the distance between a set of registered points.
+    Umeyama, Shinji: Least-squares estimation of transformation parameters
+                     between two point patterns. IEEE PAMI, 1991
+    :param x: mxn matrix of points, m = dimension, n = nr. of data points
+    :param y: mxn matrix of points, m = dimension, n = nr. of data points
+    :param with_scale: set to True to align also the scale (default: 1.0 scale)
+    :return: r, t, c - rotation matrix, translation vector and scale factor
+    """
+    if x.shape != y.shape:
+        raise print("data matrices must have the same shape")
+    x = x.T
+    y = y.T
+    # m = dimension, n = nr. of data points
+    m, n = x.shape
 
+    # means, eq. 34 and 35
+    # 计算x点集的均值
+    mean_x = x.mean(axis=1)
+    # 计算y点集的均值
+    mean_y = y.mean(axis=1)
+
+    # 计算x点集的方差
+    # 使用列减法进行计算
+    sigma_x = 1.0 / n * (np.linalg.norm(x - mean_x[:, np.newaxis])**2)
+
+    # 计算协方差矩阵
+    outer_sum = np.zeros((m, m))
+    # 遍历所有点对
+    for i in range(n):
+        # 计算每对点的外积并累加
+        outer_sum += np.outer((y[:, i] - mean_y), (x[:, i] - mean_x))
+    # 计算最终的协方差矩阵
+    cov_xy = np.multiply(1.0 / n, outer_sum)
+
+    # 对协方差矩阵进行奇异值分解
+    u, d, v = np.linalg.svd(cov_xy)
+    # 检查是否存在退化情况
+    if np.count_nonzero(d > np.finfo(d.dtype).eps) < m - 1:
+        raise print("Degenerate covariance rank, "
+                                "Umeyama alignment is not possible")
+
+    # 构造S矩阵
+    s = np.eye(m)
+    # 确保右手坐标系
+    if np.linalg.det(u) * np.linalg.det(v) < 0.0:
+        # 如果determinant小于0,将最后一个对角元素设为-1
+        s[m - 1, m - 1] = -1
+
+    # 计算旋转矩阵
+    r = u.dot(s).dot(v)
+
+    # 计算缩放因子和平移向量
+    c = 1 / sigma_x * np.trace(np.diag(d).dot(s)) if with_scale else 1.0
+    t = mean_y - np.multiply(c, r.dot(mean_x))
+
+    return r, t, c
 def signed_log1p(x):
     sign = torch.sign(x)
     return sign * torch.log1p(torch.abs(x))
@@ -528,12 +586,32 @@ def demo_fn(args):
     last_row = torch.tensor([0, 0, 0, 1]).expand(gt_pose.shape[0], 1, 4)
     gt_pose44 = torch.cat([torch.tensor(gt_pose), last_row], dim=1)
     print("Loaded GT camera parameters and poses")
-    extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
+    save_path='result.npz'
+    if os.path.exists(save_path):
+        # 下次直接加载
+        data = np.load(save_path, allow_pickle=True)
+        extrinsic = data["extrinsic"]
+        intrinsic = data["intrinsic"]
+        depth_map = data["depth_map"]
+        depth_conf = data["depth_conf"]
+        print("Loaded cached results")
+    else:
+        extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
+        np.savez(save_path, extrinsic=extrinsic, intrinsic=intrinsic, depth_map=depth_map, depth_conf=depth_conf)
+        print(f'Saved result.npz')
+
     extrinsic44 = torch.cat([torch.tensor(extrinsic), last_row], dim=1)
     extrinsic44 = torch.inverse(extrinsic44)
     extrinsic44_first =  convert_camera_pose2_first_tensor(extrinsic44)
+    extrinsic44=extrinsic44_first
     gt_pose44_first =  convert_camera_pose2_first_tensor(gt_pose44)
-    s, R, T = align_multiple_poses(extrinsic44_first.double(),gt_pose44_first.double())
+    gt_pose44=gt_pose44_first
+    # s, R, T = align_multiple_poses(extrinsic44_first.double(),gt_pose44_first.double())
+    # look logic
+    R, T, s =umeyama_alignment(extrinsic44_first[:,:,-1][:,:3], gt_pose44_first[:,:,-1][:,:3], True)
+    R=torch.tensor(R)
+    T=torch.tensor(T)
+    s=torch.tensor(s)
     T = T.reshape(3, -1)
     source_point = extrinsic44_first[:,:,-1][:,:3]
     transform_point = s*np.matmul(R , source_point.T)+ T
@@ -545,7 +623,6 @@ def demo_fn(args):
     print(gt_pose44_first[:,:,-1][:,:3])
 
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
-    # breakpoint()
     # conf_thres_value = args.conf_thres_value
     # conf_mask = depth_conf > conf_thres_value
     # conf_mask = randomly_limit_trues(conf_mask,max_points_for_colmap)
@@ -566,7 +643,7 @@ def demo_fn(args):
     gt_intrinsic_scaled = gt_intrinsic.copy()
     gt_intrinsic_scaled[:, :2, :] *= scale
     gt_intrinsic_scaled_new = gt_intrinsic_scaled.copy()
-    gt_intrinsic_scaled_new[..., 1, 2] = gt_intrinsic_scaled[..., 0, 2]
+    gt_intrinsic_scaled_new[..., 1, 2] = gt_intrinsic_scaled[..., 0, 2] # padding transform
 
     #(S,H,W,3),with x,y coordinates and frame indices
     num_frames,height, width,_ = points_3d.shape
@@ -574,6 +651,7 @@ def demo_fn(args):
     points_rgb = F.interpolate(images, size=(vggt_fixed_resolution, vggt_fixed_resolution), mode="bilinear", align_corners=False)
     points_rgb = (points_rgb.cpu().numpy()*255).astype(np.uint8)
     points_rgb = points_rgb.transpose(0, 2, 3, 1).reshape(-1, 3)
+    # maybe a bug: 
     reconstruction = batch_np_matrix_to_pycolmap_wo_track(
         points_3d_trans2gt.reshape(-1,3),
         points_xyf.reshape(-1,3),
@@ -582,28 +660,43 @@ def demo_fn(args):
         gt_intrinsic_scaled_new,   # intrinsics (已缩放)
         image_size,
         shared_camera=shared_camera,
-        camera_type=args.camera_type
+        camera_type=args.camera_type,
+        image_path_list=image_path_list,
     )
-    with torch.cuda.amp.autocast(dtype=dtype):
-        # 预测轨迹
-        pred_tracks, pred_vis_scores, pred_confs, points_3d_trans2gt, points_rgb = predict_tracks(
-            images,
-            conf=depth_conf,
-            points_3d=points_3d_trans2gt,
-            masks=None,
-            max_query_pts=args.max_query_pts,
-            query_frame_num=args.query_frame_num,
-            keypoint_extractor="aliked+sp",
-            fine_tracking=args.fine_tracking,
-        )
-        torch.cuda.empty_cache()
+    output_path='./colmap'
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
+    reconstruction.write(output_path)
+    
+    # if os.path.exists('pred_tracks.npz'):
+    if 0:
+        data = np.load('pred_tracks.npz', allow_pickle=True)
+        pred_tracks = data['pred_tracks']
+        pred_vis_scores = data['pred_vis_scores']
+        pred_confs = data['pred_confs']
+        points_3d_trans2gt = data['points_3d_trans2gt']
+        points_rgb = data['points_rgb']
+        
+    else:  
+        with torch.cuda.amp.autocast(dtype=dtype):
+            # 预测轨迹
+            pred_tracks, pred_vis_scores, pred_confs, points_3d_trans2gt, points_rgb = predict_tracks(
+                images,
+                conf=depth_conf,
+                points_3d=points_3d_trans2gt, #need to breakpoint
+                masks=None,
+                max_query_pts=args.max_query_pts,
+                query_frame_num=args.query_frame_num,
+                keypoint_extractor="aliked+sp",
+                fine_tracking=args.fine_tracking,
+            )
+            torch.cuda.empty_cache()
+            np.savez('pred_tracks.npz', pred_tracks=pred_tracks, pred_vis_scores=pred_vis_scores, pred_confs=pred_confs, points_3d_trans2gt=points_3d_trans2gt, points_rgb=points_rgb)
 
-    # breakpoint()
     # 缩放内参矩阵从518到1024
 
     track_mask = pred_vis_scores > args.vis_thresh
 
-    # import ipdb;ipdb.set_trace()
     # 使用真值内外参进行COLMAP重建
     reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
         points_3d_trans2gt,
@@ -617,11 +710,14 @@ def demo_fn(args):
         shared_camera=shared_camera,
         camera_type=args.camera_type,
         points_rgb=points_rgb,
+        image_path_list=image_path_list,
     )
-    breakpoint()
     if reconstruction is None:
         raise ValueError("No reconstruction can be built with BA")
-
+    output_path='./colmap_track'
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
+    reconstruction.write(output_path)
     # Bundle Adjustment
     ba_options = pycolmap.BundleAdjustmentOptions()
     pycolmap.bundle_adjustment(reconstruction, ba_options)
@@ -638,14 +734,15 @@ def demo_fn(args):
     )
 
     # 保存重建结果
-    print(f"Saving reconstruction to {args.scene_dir}/sparse/gt_camera_ba")
-    sparse_reconstruction_dir = os.path.join(args.scene_dir, "sparse/gt_camera_ba")
+    root_path = args.scene_dir.split('/')[:-1]
+    print(f"Saving reconstruction to {root_path}/sparse/gt_camera_ba")
+    sparse_reconstruction_dir = os.path.join(root_path, "sparse/gt_camera_ba")
     os.makedirs(sparse_reconstruction_dir, exist_ok=True)
     reconstruction.write(sparse_reconstruction_dir)
 
     # 保存点云
     trimesh.PointCloud(points_3d_trans2gt, colors=points_rgb).export(
-        os.path.join(args.scene_dir, "sparse/gt_camera_ba/points.ply")
+        os.path.join(root_path, "sparse/gt_camera_ba/points.ply")
     )
 
     print("Reconstruction completed successfully!")

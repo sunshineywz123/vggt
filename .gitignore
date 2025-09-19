@@ -157,3 +157,8 @@ scene/
 demo_colmap.py
 dinov3_vits16_pretrain_lvd1689m-08c60483.pth
 *.pth
+*.bin
+*.png
+*.jpg
+*.ply
+*.npz

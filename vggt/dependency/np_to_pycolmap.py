@@ -6,6 +6,7 @@
 
 import numpy as np
 import pycolmap
+
 from .projection import project_3D_points_np
 
 
@@ -23,6 +24,7 @@ def batch_np_matrix_to_pycolmap(
     extra_params=None,
     min_inlier_per_frame=64,
     points_rgb=None,
+    image_path_list=None
 ):
     """
     Convert Batched NumPy Arrays to PyCOLMAP
@@ -45,6 +47,7 @@ def batch_np_matrix_to_pycolmap(
     # image_size: 2, assume all the frames have been padded to the same size
     # where N is the number of frames and P is the number of tracks
 
+    # breakpoint()
     N, P, _ = tracks.shape
     assert len(extrinsics) == N
     assert len(intrinsics) == N
@@ -53,10 +56,13 @@ def batch_np_matrix_to_pycolmap(
 
     reproj_mask = None
 
+    # debug why error is always so bing? maybe use some visualize 
+    # todo
+    # todo
     if max_reproj_error is not None:
         projected_points_2d, projected_points_cam = project_3D_points_np(points3d, extrinsics, intrinsics)
         projected_diff = np.linalg.norm(projected_points_2d - tracks, axis=-1)
-        projected_points_2d[projected_points_cam[:, -1] <= 0] = 1e6
+        projected_points_2d[projected_points_cam[:, -1] <= 0] = 1e6 # invalid infinite
         reproj_mask = projected_diff < max_reproj_error
 
     if masks is not None and reproj_mask is not None:
@@ -68,9 +74,9 @@ def batch_np_matrix_to_pycolmap(
 
     assert masks is not None
 
-    if masks.sum(1).min() < min_inlier_per_frame:
-        print(f"Not enough inliers per frame, skip BA.")
-        return None, None
+    # if masks.sum(1).min() < min_inlier_per_frame:
+    #     print(f"Not enough inliers per frame, skip BA.")
+    #     return None, None
 
     # Reconstruction object, following the format of PyCOLMAP/COLMAP
     reconstruction = pycolmap.Reconstruction()
@@ -105,8 +111,11 @@ def batch_np_matrix_to_pycolmap(
             pycolmap.Rotation3d(extrinsics[fidx][:3, :3]), extrinsics[fidx][:3, 3]
         )  # Rot and Trans
 
+        # image = pycolmap.Image(
+        #     id=fidx + 1, name=f"image_{fidx + 1}", camera_id=camera.camera_id, cam_from_world=cam_from_world
+        # )
         image = pycolmap.Image(
-            id=fidx + 1, name=f"image_{fidx + 1}", camera_id=camera.camera_id, cam_from_world=cam_from_world
+            id=fidx + 1, name=image_path_list[fidx], camera_id=camera.camera_id, cam_from_world=cam_from_world
         )
 
         points2D_list = []
@@ -207,6 +216,7 @@ def batch_np_matrix_to_pycolmap_wo_track(
     image_size,
     shared_camera=False,
     camera_type="SIMPLE_PINHOLE",
+    image_path_list=None,
 ):
     """
     Convert Batched NumPy Arrays to PyCOLMAP
@@ -253,10 +263,12 @@ def batch_np_matrix_to_pycolmap_wo_track(
             pycolmap.Rotation3d(extrinsics[fidx][:3, :3]), extrinsics[fidx][:3, 3]
         )  # Rot and Trans
 
+        # image = pycolmap.Image(
+        #     id=fidx + 1, name=f"image_{fidx + 1}", camera_id=camera.camera_id, cam_from_world=cam_from_world
+        # )
         image = pycolmap.Image(
-            id=fidx + 1, name=f"image_{fidx + 1}", camera_id=camera.camera_id, cam_from_world=cam_from_world
+            id=fidx + 1, name=image_path_list[fidx], camera_id=camera.camera_id, cam_from_world=cam_from_world
         )
-
         points2D_list = []
 
         point2D_idx = 0
